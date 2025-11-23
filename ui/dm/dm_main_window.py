@@ -10,11 +10,14 @@ try:
     from ui.dm.creature_item_redactor.item_creator_tab import ItemCreatorTab
     from ui.dm.creature_item_redactor.scenario_tree_tab import ScenarioTreeTab
     from ui.dm.inventory_manager_tab import InventoryManagerTab
+    from ui.dm.combat_manager_tab import CombatManagerTab  # NEW IMPORT
 except ImportError:
+    # Fallback for simpler structure if files are flat
     from ui.dm.hosting_window import HostingTab
     from ui.dm.scenario_tab import ScenarioTab
     from ui.dm.item_creator_tab import ItemCreatorTab
     from ui.dm.scenario_tree_tab import ScenarioTreeTab
+    from ui.dm.combat_manager_tab import CombatManagerTab
 
 
 class DM_MainWindow(QMainWindow):
@@ -85,6 +88,13 @@ class DM_MainWindow(QMainWindow):
 
         self.hosting_tab = HostingTab(dm=self.dm)
         self.tabs.addTab(self.hosting_tab, "📡 Хостинг")
+
+        # Додаємо нову вкладку БОЮ
+        try:
+            self.combat_tab = CombatManagerTab(dm=self.dm)
+            self.tabs.addTab(self.combat_tab, "⚔️ Бій")
+        except Exception as e:
+            print(f"Error loading combat tab: {e}")
 
         try:
             self.inventory_manager_tab = InventoryManagerTab(dm=self.dm)
