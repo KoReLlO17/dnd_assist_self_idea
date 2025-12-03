@@ -4,23 +4,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-# Імпортуємо DataManager
-try:
-    from core.data_manager import DataManager
-except ImportError:
-    print("CRITICAL ERROR: Could not import DataManager")
-
-
-    class DataManager:
-        pass  # Fallback
-
-# Імпорти UI (з fallback для запуску з різних папок)
-try:
-    from ui.player.character_creation_card_tab import CharacterCreationCardTab
-    from ui.player.player_menu import PlayerMenu
-except ImportError:
-    from character_creation_card_tab import CharacterCreationCardTab
-    from player_menu import PlayerMenu
+# Use absolute imports consistently
+from core.data_manager import DataManager
+from ui.player.character_creation_card_tab import CharacterCreationCardTab
+from ui.player.player_menu import PlayerMenu
 
 
 class PlayerMainWindow(QMainWindow):

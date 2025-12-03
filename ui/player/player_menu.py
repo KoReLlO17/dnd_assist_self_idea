@@ -14,102 +14,8 @@ from ui.player.logs_tab import LogsTab
 from ui.dialogs.roll_dialog import RollDialog
 from ui.dialogs.dual_roll_dialog import DualRollDialog
 from ui.player.character_sheet_window import CharacterSheetWindow
-from ui.widgets.battle_map_widget import BattleMapWidget
-
-
-class PlayerMapWindow(QDialog):
-    def __init__(self, dm, char_uid, char_data, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Бойова Мапа")
-        self.resize(1000, 700)
-        self.dm = dm
-        self.char_uid = char_uid
-        self.char_data = char_data
-        self.setStyleSheet("background-color: #263238; color: white;")
-
-        l = QHBoxLayout(self)
-        spl = QSplitter(Qt.Horizontal)
-
-        # ACTIONS
-        aw = QWidget()
-        aw.setStyleSheet("background-color: #37474F;")
-        al = QVBoxLayout(aw)
-        al.addWidget(QLabel("<h3>Маневри</h3>"))
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("background-color: transparent; border: none;")
-        bc = QWidget()
-        bc.setStyleSheet("background-color: transparent;")
-        self.vbox = QVBoxLayout(bc)
-
-        self._populate()
-
-        self.vbox.addStretch()
-        scroll.setWidget(bc)
-        al.addWidget(scroll)
-        self.lbl_st = QLabel("...")
-        al.addWidget(self.lbl_st)
-        spl.addWidget(aw)
-
-        # MAP
-        mc = QWidget()
-        ml = QVBoxLayout(mc)
-        self.map = BattleMapWidget(is_dm=False, my_uid=char_uid)
-        self.map.token_moved.connect(self._on_move)
-        ml.addWidget(self.map)
-        spl.addWidget(mc)
-        spl.setSizes([300, 700])
-        l.addWidget(spl)
-
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._sync)
-        self.timer.start(500)
-
-    def _populate(self):
-        inv = self.dm.get_inventory(self.char_uid)
-        man = self.dm.get_combat_maneuvers()
-
-        # Check inventory
-        has_wep = any(i.get('type') == 'Weapon' for i in inv.values())
-        has_focus = any(i.get('type') == 'Focus' for i in inv.values())
-        has_ranged = any(i.get('type') == 'RangedWeapon' for i in inv.values())
-
-        for k, m in man.items():
-            req = m.get('req_item_type')
-            avail = True
-            reason = ""
-
-            if req == 'Weapon' and not has_wep: avail = False; reason = "Need Weapon"
-            if req == 'RangedWeapon' and not has_ranged: avail = False; reason = "Need Bow"
-            if req == 'Focus' and not has_focus: avail = False; reason = "Need Focus"
-
-            txt = f"{m['name']}\n{m['desc']}"
-            if not avail: txt += f"\n🚫 {reason}"
-
-            btn = QPushButton(txt)
-            btn.setStyleSheet(
-                "text-align:left; padding:8px; border:1px solid #777; background:#455A64; border-radius:4px; font-weight:bold;")
-
-            if avail:
-                btn.setCursor(Qt.PointingHandCursor)
-                btn.clicked.connect(lambda ch=False, d=m: self.parent()._initiate_maneuver(d))
-            else:
-                btn.setEnabled(False)
-                btn.setStyleSheet(
-                    "text-align:left; padding:8px; border:1px dashed #555; background:#263238; color:#78909C;")
-
-            self.vbox.addWidget(btn)
-
-    def _sync(self):
-        st = self.dm.get_combat_state()
-        self.map.update_state(st.get("tokens", {}))
-        idx = st.get("current_turn_index", 0)
-        order = st.get("turn_order", [])
-        if order: self.lbl_st.setText(f"Хід: {order[idx]['name']}")
-
-    def _on_move(self, uid, x, y):
-        self.dm.move_token(uid, x, y)
+# Замість старого PlayerMapWindow імпортуємо спільне CombatWindow
+from ui.common.combat_window import CombatWindow
 
 
 class PlayerMenu(QWidget):
@@ -117,70 +23,292 @@ class PlayerMenu(QWidget):
         super().__init__(parent)
         self.dm = dm
         self.char_data = char_data
-        if 'conditions' not in self.char_data: self.char_data['conditions'] = {"physical_exhaustion": 0, "morale": 10}
+
+        if 'custom_actions' not in self.char_data: self.char_data['custom_actions'] = []
+        if 'conditions' not in self.char_data:
+            self.char_data['conditions'] = {"physical_exhaustion": 0, "morale": 10}
+
+        self.maneuvers = self.dm.get_combat_maneuvers()
 
         self.stats = self.char_data.get('stats', {})
         self.mods = self._calculate_mods(self.stats)
         self.lvl = self.char_data.get('level', 1)
-        self.max_hp = 20
+        self.max_hp = self._calc_max_hp()
         self.max_fatigue = self.dm.calculate_max_fatigue(self.max_hp)
+
+        self.current_hp = self.max_hp
 
         self.setStyleSheet("""
             QWidget { background-color: #F5F5F5; color: #333; font-family: 'Segoe UI'; }
-            QPushButton { padding: 8px; border-radius: 4px; font-weight: bold; }
-            #MapBtn { background-color: #D32F2F; color: white; font-size: 16px; padding: 12px; }
-            #MapBtn:hover { background-color: #B71C1C; }
+            QGroupBox { border: 1px solid #BDBDBD; border-radius: 8px; margin-top: 10px; background-color: white; font-weight: bold; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            .StatBox { background-color: #EDE7F6; border: 1px solid #D1C4E9; border-radius: 8px; }
+            .StatValue { font-size: 22px; font-weight: bold; color: #6A1B9A; }
+
+            QPushButton.ManeuverBtn {
+                text-align: left; background-color: #FFF3E0; border: 1px solid #FFB74D;
+                border-radius: 6px; padding: 12px; font-size: 15px; font-weight: bold; color: #E65100;
+            }
+            QPushButton.ManeuverBtn:hover { background-color: #FFE0B2; }
+
+            QPushButton.TurnBtn {
+                background-color: #2196F3; color: white; font-weight: bold; 
+                border-radius: 4px; padding: 8px; font-size: 14px;
+            }
+            QPushButton.TurnBtn:hover { background-color: #42A5F5; }
+
+            QPushButton.MapBtn {
+                background-color: #D32F2F; color: white; font-weight: bold; 
+                border-radius: 4px; padding: 10px; font-size: 16px;
+            }
+            QPushButton.MapBtn:hover { background-color: #C62828; }
+
+            QProgressBar { border: 1px solid #999; border-radius: 5px; text-align: center; font-weight: bold; height: 18px; }
+
+            #SheetBtn { background-color: #E1BEE7; border: 1px solid #CE93D8; border-radius: 20px; font-size: 20px; }
+            #SheetBtn:hover { background-color: #F3E5F5; }
         """)
 
-        main = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        self._setup_header(main_layout)
+        self._setup_combat_stats(main_layout)
 
-        # Header
-        h = QHBoxLayout()
-        h.addWidget(QLabel(f"<h1>{self.char_data.get('name')}</h1>"))
-        btn_map = QPushButton("⚔️ БІЙ / МАПА")
-        btn_map.setObjectName("MapBtn")
-        btn_map.clicked.connect(self._open_map)
-        h.addWidget(btn_map)
-        main.addLayout(h)
+        self.sub_tabs = QTabWidget()
+        self.inventory_tab = InventoryTab(dm=self.dm)
+        self.sub_tabs.addTab(self.inventory_tab, "🎒 Інвентар")
+        self.logs_tab = LogsTab(dm=self.dm)
+        self.sub_tabs.addTab(self.logs_tab, "📜 Логи")
 
-        # Stats
-        st_lay = QHBoxLayout()
-        st_lay.addWidget(QLabel(f"HP: {self.max_hp}"))
-        st_lay.addWidget(QLabel(f"Fatigue: {self.char_data['conditions']['physical_exhaustion']}/{self.max_fatigue}"))
-        main.addLayout(st_lay)
+        main_layout.addWidget(self.sub_tabs)
+        QTimer.singleShot(500, self._check_starter_gear)
 
-        # Tabs
-        tabs = QTabWidget()
-        tabs.addTab(InventoryTab(dm=self.dm), "Інвентар")
-        tabs.addTab(LogsTab(dm=self.dm), "Логи")
-        main.addWidget(tabs)
+        self._update_fuzzy_status_ui()
 
-    def _open_map(self):
-        win = PlayerMapWindow(self.dm, self.dm.get_user_id(), self.char_data, self)
-        win.show()
+    def _calc_max_hp(self):
+        cls_name = self.char_data.get('char_class')
+        hit_die = self.dm.get_classes_data().get(cls_name, {}).get('hit_die', 8)
+        con_mod = self.mods.get('con', 0)
+        hp = hit_die + con_mod
+        if self.lvl > 1: hp += int(((hit_die / 2) + 1 + con_mod) * (self.lvl - 1))
+        return hp
 
-    def _calculate_mods(self, stats):
-        return {k: (v - 10) // 2 for k, v in stats.items()}
+    def _setup_header(self, layout):
+        hbox = QHBoxLayout()
 
-    def _initiate_maneuver(self, data):
-        # Logic for rolling maneuver
-        stat = data['stat_options'][0]  # Simplified
-        mod = self.mods.get(stat, 0)
-        dlg = DualRollDialog(data['name'], mod, "Skill", 0, data, parent=self)
-        if dlg.exec():
-            self.dm.push_session_update(self.dm.get_current_session(), dlg.result_msg, "COMBAT")
+        self.btn_sheet = QPushButton("👤")
+        self.btn_sheet.setFixedSize(40, 40)
+        self.btn_sheet.setObjectName("SheetBtn")
+        self.btn_sheet.setToolTip("Відкрити повну картку персонажа")
+        self.btn_sheet.clicked.connect(self._open_character_sheet)
+        hbox.addWidget(self.btn_sheet)
 
-    def _check_starter_gear(self):
-        pass
+        info_vbox = QVBoxLayout()
+        name = self.char_data.get('name', 'Unknown')
+        cls = self.char_data.get('char_class', 'Fighter')
+        info_vbox.addWidget(QLabel(f"<h1>{name}</h1>"))
 
-    def _upd_cond(self, k, v):
-        pass
+        self.status_lbl = QLabel("Стан: Стабільний")
+        self.status_lbl.setStyleSheet("font-weight: bold; color: #388E3C;")
+        info_vbox.addWidget(self.status_lbl)
 
-    def _on_start_turn(self):
-        pass
+        hbox.addLayout(info_vbox)
+
+        # --- Кнопки Дій ---
+        self.btn_start_turn = QPushButton("🔄 ХІД")
+        self.btn_start_turn.setProperty("class", "TurnBtn")
+        self.btn_start_turn.setCursor(Qt.PointingHandCursor)
+        self.btn_start_turn.clicked.connect(self._on_start_turn)
+        hbox.addWidget(self.btn_start_turn)
+
+        # ВЕЛИКА КНОПКА БОЮ
+        self.btn_map = QPushButton("⚔️ БІЙ / МАПА")
+        self.btn_map.setProperty("class", "MapBtn")
+        self.btn_map.setCursor(Qt.PointingHandCursor)
+        self.btn_map.clicked.connect(self._open_map_window)
+        hbox.addWidget(self.btn_map)
+
+        hbox.addStretch(1)
+
+        cond_grp = QGroupBox("Ресурси")
+        cond_l = QVBoxLayout(cond_grp)
+
+        ex_hbox = QHBoxLayout()
+        ex_hbox.addWidget(QLabel("Втома:"))
+        self.ex_bar = QProgressBar()
+        self.ex_bar.setRange(0, self.max_fatigue)
+        self.ex_bar.setValue(self.char_data['conditions']['physical_exhaustion'])
+        self.ex_bar.setStyleSheet("QProgressBar::chunk { background-color: #D32F2F; }")
+        self.ex_bar.setFormat(f"%v / {self.max_fatigue}")
+        ex_hbox.addWidget(self.ex_bar)
+        btn_ex_up = QPushButton("+");
+        btn_ex_up.setFixedSize(20, 20);
+        btn_ex_up.clicked.connect(lambda: self._upd_cond('physical_exhaustion', 5))
+        btn_ex_dn = QPushButton("-");
+        btn_ex_dn.setFixedSize(20, 20);
+        btn_ex_dn.clicked.connect(lambda: self._upd_cond('physical_exhaustion', -5))
+        ex_hbox.addWidget(btn_ex_dn);
+        ex_hbox.addWidget(btn_ex_up)
+        cond_l.addLayout(ex_hbox)
+
+        mor_hbox = QHBoxLayout()
+        mor_hbox.addWidget(QLabel("Мораль:"))
+        self.mor_bar = QProgressBar()
+        self.mor_bar.setRange(0, 20)
+        self.mor_bar.setValue(self.char_data['conditions']['morale'])
+        self.mor_bar.setStyleSheet("QProgressBar::chunk { background-color: #FF9800; }")
+        self.mor_bar.setFormat("%v")
+        mor_hbox.addWidget(self.mor_bar)
+        btn_mor_up = QPushButton("+");
+        btn_mor_up.setFixedSize(20, 20);
+        btn_mor_up.clicked.connect(lambda: self._upd_cond('morale', 1))
+        btn_mor_dn = QPushButton("-");
+        btn_mor_dn.setFixedSize(20, 20);
+        btn_mor_dn.clicked.connect(lambda: self._upd_cond('morale', -1))
+        mor_hbox.addWidget(btn_mor_dn);
+        mor_hbox.addWidget(btn_mor_up)
+        cond_l.addLayout(mor_hbox)
+
+        hbox.addWidget(cond_grp)
+        layout.addLayout(hbox)
+
+    def _open_map_window(self):
+        # Відкриваємо нове спільне вікно бою
+        # is_dm=False -> гравець може рухати тільки свій токен
+        self.map_win = CombatWindow(self.dm, char_uid=self.dm.get_user_id(), is_dm=False, parent=self)
+        self.map_win.show()
 
     def _open_character_sheet(self):
-        pass
+        win = CharacterSheetWindow(self.char_data, self.dm, self)
+        win.exec()
+
+    def _get_fuzzy_state(self):
+        hp = self.max_hp
+        return FuzzyLogic.calculate_game_state(
+            hp, self.max_hp,
+            self.char_data['conditions']['physical_exhaustion'], self.max_fatigue,
+            self.char_data['conditions']['morale']
+        )
 
     def _update_fuzzy_status_ui(self):
+        state = self._get_fuzzy_state()
+        self.status_lbl.setText(state['status_text'])
+        if "КРИТИЧНИЙ" in state['status_text'] or "ВИБУВ" in state['status_text']:
+            self.status_lbl.setStyleSheet("font-weight: bold; color: #D32F2F;")
+        elif "РИЗИК" in state['status_text']:
+            self.status_lbl.setStyleSheet("font-weight: bold; color: #F57C00;")
+        else:
+            self.status_lbl.setStyleSheet("font-weight: bold; color: #388E3C;")
+
+    def _on_start_turn(self):
+        state = self._get_fuzzy_state()
+        cond = state.get('condition', 'ACTIVE')
+
+        if cond != 'ACTIVE':
+            msg = f"Стан: {cond}. Ви не можете діяти."
+            QMessageBox.critical(self, "Вибув", msg)
+            return
+
+        if state.get('panic_needed', False):
+            dc = state['panic_dc']
+            wis_mod = self.mods.get('wis', 0)
+            bonus_str = f"+{wis_mod}" if wis_mod >= 0 else str(wis_mod)
+
+            dlg = RollDialog("САМОКОНТРОЛЬ", f"1d20{bonus_str}", f"Тест на паніку (DC {dc})", self)
+            dlg.exec()
+
+            if dlg.final_total < dc:
+                sid = self.dm.get_current_session()
+                if sid: self.dm.push_session_update(sid,
+                                                    f"❌ ПАНІКА! Гравець провалив тест (Roll {dlg.final_total} < DC {dc}).",
+                                                    "SYSTEM")
+                QMessageBox.warning(self, "Паніка!", "Ви не можете контролювати себе цього ходу.")
+            else:
+                QMessageBox.information(self, "Успіх", "Ви опанували себе.")
+
+    def _upd_cond(self, key, delta):
+        curr = self.char_data['conditions'].get(key, 0)
+        limit = self.max_fatigue if key == 'physical_exhaustion' else 20
+        new_val = max(0, min(limit, curr + delta))
+        self.char_data['conditions'][key] = new_val
+
+        if key == 'physical_exhaustion':
+            self.ex_bar.setValue(new_val)
+        else:
+            self.mor_bar.setValue(new_val)
+
+        self.dm.update_character_data({"conditions": self.char_data['conditions']})
+        self._update_fuzzy_status_ui()
+
+    def _initiate_maneuver(self, data):
+        options = [s.upper() for s in data['stat_options']]
+        atk_choice, ok1 = QInputDialog.getItem(self, data['name'], "Чим дієте?", options, 0, False)
+        if not ok1: return
+
+        allowed_skill_stats = data.get('stat_options', ['str', 'dex'])
+        all_skills = self.dm.get_all_skills()
+        skill_choice, ok2 = QInputDialog.getItem(self, "Маневр", "Яку навичку використати?", all_skills, 0, False)
+        if not ok2: return
+
+        stat_key = atk_choice.lower()
+        atk_mod = self.mods.get(stat_key, 0)
+        skill_mod = self._get_skill_mod(skill_choice)
+
+        state = self._get_fuzzy_state()
+        crit_rng = state['crit_thresh']
+        fumble_rng = state['fumble_thresh']
+
+        if state.get('condition', 'ACTIVE') != 'ACTIVE':
+            QMessageBox.warning(self, "Увага", "Ви не можете діяти в цьому стані!")
+            return
+
+        dlg = DualRollDialog(
+            atk_choice, atk_mod,
+            skill_choice, skill_mod,
+            data,
+            crit_range=crit_rng,
+            fumble_range=fumble_rng,
+            parent=self
+        )
+
+        if dlg.exec():
+            msg = dlg.result_msg
+            sid = self.dm.get_current_session()
+            if sid: self.dm.push_session_update(sid, msg, "COMBAT")
+
+    def _get_skill_mod(self, skill_full):
+        short = skill_full.split('(')[0].strip()
+        eng = skill_full.split('(')[-1].replace(')', '').strip() if '(' in skill_full else short
+        s_map = {"Athletics": "str", "Acrobatics": "dex", "Stealth": "dex", "Arcana": "int", "History": "int",
+                 "Investigation": "int", "Nature": "int", "Religion": "int", "Animal Handling": "wis", "Insight": "wis",
+                 "Medicine": "wis", "Perception": "wis", "Survival": "wis", "Deception": "cha", "Intimidation": "cha",
+                 "Performance": "cha", "Persuasion": "cha"}
+        stat_key = s_map.get(eng, 'wis')
+        base = self.mods.get(stat_key, 0)
+        is_prof = any((eng in s or short in s) for s in self.char_data.get('skills', []))
+        prof = math.ceil(self.lvl / 4) + 1
+        return base + (prof if is_prof else 0)
+
+    def _setup_combat_stats(self, l):
+        h = QHBoxLayout()
+        dex = self.mods.get('dex', 0)
+        self._box(h, "AC", 10 + dex)
+        self._box(h, "HP", self.max_hp)
+        self._box(h, "Max Fatigue", self.max_fatigue)
+        l.addLayout(h)
+
+    def _box(self, l, t, v):
+        f = QFrame();
+        f.setProperty("class", "StatBox");
+        v_l = QVBoxLayout(f);
+        v_l.setContentsMargins(5, 5, 5, 5)
+        v_l.addWidget(QLabel(str(v), alignment=Qt.AlignCenter))
+        v_l.addWidget(QLabel(t, alignment=Qt.AlignCenter))
+        l.addWidget(f)
+
+    def _calculate_mods(self, stats):
+        mods = {}
+        for k, v in stats.items(): mods[k] = (v - 10) // 2
+        return mods
+
+    def _check_starter_gear(self):
         pass

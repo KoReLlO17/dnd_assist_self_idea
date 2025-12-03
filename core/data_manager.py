@@ -7,15 +7,19 @@ import math
 import random
 import sqlite3
 import os
+import time
+import copy
 from flask import Flask, request, jsonify
 from PySide6.QtCore import QDateTime, QObject, Signal
 
-# --- SERVER SIDE (FLASK) ---
+# --- SERVER SIDE ---
 app = Flask(__name__)
 import logging
 
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
+
+db_lock = threading.Lock()
 
 db_store = {
     "sessions": {},
@@ -31,7 +35,8 @@ def get_status(): return jsonify({"status": "running", "dm_id": "HOST"})
 
 @app.route('/session/<sid>', methods=['GET'])
 def get_session(sid):
-    session = db_store["sessions"].get(sid)
+    with db_lock:
+        session = db_store["sessions"].get(sid)
     return jsonify(session) if session else (jsonify({"error": "Not found"}), 404)
 
 
@@ -39,12 +44,13 @@ def get_session(sid):
 def create_session():
     data = request.json
     sid = data.get("id")
-    db_store["sessions"][sid] = data["data"]
-    db_store["active_session_id"] = sid
-    db_store["combat_state"][sid] = {
-        "active": False, "round": 0, "turn_order": [],
-        "current_turn_index": 0, "tokens": {}
-    }
+    with db_lock:
+        db_store["sessions"][sid] = data["data"]
+        db_store["active_session_id"] = sid
+        db_store["combat_state"][sid] = {
+            "active": False, "round": 0, "turn_order": [],
+            "current_turn_index": 0, "tokens": {}
+        }
     return jsonify({"success": True})
 
 
@@ -52,12 +58,13 @@ def create_session():
 def join_player():
     data = request.json
     sid, uid, p_data = data.get("sid"), data.get("uid"), data.get("player_data")
-    if sid in db_store["sessions"]:
-        db_store["sessions"][sid]["players"][uid] = p_data
-        log = {"type": "JOIN", "content": f"{p_data['name']} joined!", "timestamp": "NOW", "sender_id": "SYS",
-               "is_secret": False}
-        db_store["sessions"][sid]["logs"].append(log)
-        return jsonify({"success": True})
+    with db_lock:
+        if sid in db_store["sessions"]:
+            db_store["sessions"][sid]["players"][uid] = p_data
+            log = {"type": "JOIN", "content": f"{p_data['name']} приєднався!", "timestamp": "NOW", "sender_id": "SYS",
+                   "is_secret": False}
+            db_store["sessions"][sid]["logs"].append(log)
+            return jsonify({"success": True})
     return jsonify({"error": "No session"}), 404
 
 
@@ -65,9 +72,10 @@ def join_player():
 def update_player():
     data = request.json
     sid, uid, new_data = data.get("sid"), data.get("uid"), data.get("data")
-    if sid in db_store["sessions"] and uid in db_store["sessions"][sid]["players"]:
-        db_store["sessions"][sid]["players"][uid].update(new_data)
-        return jsonify({"success": True})
+    with db_lock:
+        if sid in db_store["sessions"] and uid in db_store["sessions"][sid]["players"]:
+            db_store["sessions"][sid]["players"][uid].update(new_data)
+            return jsonify({"success": True})
     return jsonify({"error": "Err"}), 404
 
 
@@ -75,15 +83,17 @@ def update_player():
 def add_log():
     data = request.json
     sid, log = data.get("sid"), data.get("log")
-    if sid in db_store["sessions"]:
-        db_store["sessions"][sid]["logs"].append(log)
-        return jsonify({"success": True})
+    with db_lock:
+        if sid in db_store["sessions"]:
+            db_store["sessions"][sid]["logs"].append(log)
+            return jsonify({"success": True})
     return jsonify({"error": "Err"}), 404
 
 
 @app.route('/combat/state/<sid>', methods=['GET'])
 def get_combat_state_route(sid):
-    state = db_store["combat_state"].get(sid, {})
+    with db_lock:
+        state = db_store["combat_state"].get(sid, {})
     return jsonify(state)
 
 
@@ -92,31 +102,62 @@ def update_combat_route():
     data = request.json
     sid = data.get("sid")
     new_state = data.get("state")
-    if sid in db_store["combat_state"]:
-        db_store["combat_state"][sid].update(new_state)
-        return jsonify({"success": True})
+    with db_lock:
+        if sid in db_store["combat_state"]:
+            if "tokens" in new_state:
+                db_store["combat_state"][sid]["tokens"].update(new_state["tokens"])
+                temp_state = new_state.copy()
+                del temp_state["tokens"]
+                db_store["combat_state"][sid].update(temp_state)
+            else:
+                db_store["combat_state"][sid].update(new_state)
+            return jsonify({"success": True})
     return jsonify({"error": "No session"}), 404
 
 
-# --- CLIENT (DATA MANAGER) ---
+# --- CLIENT ---
 class DataManager(QObject):
     _instance = None
-
-    GITHUB_RAW_BASE_2014 = "https://raw.githubusercontent.com/5e-bits/5e-database/refs/heads/main/src/2014"
-    GITHUB_RAW_BASE_2024 = "https://raw.githubusercontent.com/5e-bits/5e-database/refs/heads/main/src/2024"
-
+    GITHUB_RAW_BASE = "https://raw.githubusercontent.com/5e-bits/5e-database/refs/heads/main/src/2014"
     FILES_MAP = {
-        "races": "5e-SRD-Races.json",
-        "classes": "5e-SRD-Classes.json",
-        "monsters": "5e-SRD-Monsters.json",
-        "spells": "5e-SRD-Spells.json",
-        "subraces": "5e-SRD-Subraces.json",
-        "subclasses": "5e-SRD-Subclasses.json",
-        "skills": "5e-SRD-Skills.json",
-        "equipment": "5e-SRD-Equipment.json",
-        "traits": "5e-SRD-Traits.json",
+        "races": "5e-SRD-Races.json", "classes": "5e-SRD-Classes.json", "monsters": "5e-SRD-Monsters.json",
+        "spells": "5e-SRD-Spells.json", "subraces": "5e-SRD-Subraces.json", "subclasses": "5e-SRD-Subclasses.json",
+        "skills": "5e-SRD-Skills.json", "equipment": "5e-SRD-Equipment.json", "traits": "5e-SRD-Traits.json",
         "ability_scores": "5e-SRD-Ability-Scores.json"
     }
+
+    def add_object_to_combat(self, obj_type):
+        """
+        Додає неживий об'єкт на поле бою (стіна, бочка).
+        """
+        if not self._current_session_id: return
+
+        obj_definitions = {
+            "wall": {"name": "Стіна", "color": "#607D8B", "symbol": "█", "hp": 100},
+            "barrel": {"name": "Вибухова Бочка", "color": "#FF5722", "symbol": "🛢️", "hp": 10},
+            "trap": {"name": "Пастка", "color": "#9E9E9E", "symbol": "⚠", "hp": 5},
+            "chest": {"name": "Скриня", "color": "#FFC107", "symbol": "📦", "hp": 20}
+        }
+
+        definition = obj_definitions.get(obj_type)
+        if not definition: return
+
+        uid = f"OBJ_{str(uuid.uuid4())[:4]}"
+
+        # Додаємо як токен, але з типом 'object'
+        new_token = {
+            uid: {
+                "name": definition['name'],
+                "x": 0, "y": 0,
+                "color": definition['color'],
+                "type": "object",  # Важливо для логіки переміщення
+                "symbol": definition['symbol'],  # Для відображення на мапі
+                "hp": definition['hp'],
+                "max_hp": definition['hp']
+            }
+        }
+        self.update_combat_state({"tokens": new_token})
+        return uid
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -130,36 +171,31 @@ class DataManager(QObject):
     def _init_once(self):
         super().__init__()
         self.user_id = "USER_" + str(uuid.uuid4())[:4].upper()
-        self.is_host = False  # Will be set to True when server starts
+        self.is_host = True
         self.server_ip = "127.0.0.1"
         self.server_port = 5000
-        self.server_url = f"http://{self.server_ip}:{self.server_port}"  # Set default immediately
+        self.server_url = f"http://{self.server_ip}:{self.server_port}"
         self._current_session_id = None
+
+        self.start_server()
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(current_dir)
         self.db_path = os.path.join(project_root, "dnd_data.sqlite3")
 
-        print(f"🔍 DB Path: {self.db_path}")
-
-        self.races = {}
-        self.classes = {}
+        self.races = {};
+        self.classes = {};
         self.skills_list = []
-        self.subrace_map = {}
-        self.subclass_map = {}
-        self.spells_data = {}
+        self.subrace_map = {};
+        self.subclass_map = {};
+        self.spells_data = {};
         self.creature_bestiary = {}
+        self._client_lock = threading.Lock()
 
         loaded = self._load_data_from_sqlite()
-
         if not loaded:
-            print("⚠️ Database needs initialization. Starting download...")
-            self._seed_db_combined()
-            if self._load_data_from_sqlite():
-                print("✅ Database initialized and loaded successfully.")
-            else:
-                print("❌ Failed to initialize DB. Using fallbacks.")
-                self._load_fallbacks()
+            self._seed_db_from_github()
+            if not self._load_data_from_sqlite(): self._load_fallbacks()
 
         self.master_items = {
             "dagger": {"name": "Dagger", "type": "Weapon", "subtype": "Melee", "damage": "1d4"},
@@ -169,190 +205,122 @@ class DataManager(QObject):
             "potion": {"name": "Potion of Healing", "type": "Consumable", "effect": "Heal 2d4+2"},
             "focus": {"name": "Arcane Focus", "type": "Focus", "desc": "Orb or Wand"}
         }
-
         self.combat_maneuvers = {
-            "phys_pressure": {"name": "⚔️ Physical Pressure", "desc": "Strong weapon attack.", "type": "physical",
+            "phys_pressure": {"name": "⚔️ Фізичний Тиск", "desc": "Силова атака зброєю.", "type": "physical",
                               "stat_options": ["str", "dex"], "effect_formula": "mod", "req_item_type": "Weapon"},
-            "unarmed_strike": {"name": "👊 Unarmed Strike", "desc": "Punch or Kick.", "type": "physical",
+            "unarmed_strike": {"name": "👊 Рукопашний Бій", "desc": "Атака кулаками.", "type": "physical",
                                "stat_options": ["str", "dex"], "effect_formula": "mod", "req_item_type": None},
-            "morale_break": {"name": "😱 Intimidate", "desc": "Psychological attack.", "type": "morale",
-                             "stat_options": ["cha"], "effect_formula": "mod", "req_item_type": None},
-            "magic_assault": {"name": "✨ Magic Bolt", "desc": "Magical damage.", "type": "hybrid",
+            "morale_break": {"name": "😱 Злам Духу", "desc": "Залякування.", "type": "morale", "stat_options": ["cha"],
+                             "effect_formula": "mod", "req_item_type": None},
+            "magic_assault": {"name": "✨ Магічний Постріл", "desc": "Закляття.", "type": "hybrid",
                               "stat_options": ["int", "wis"], "effect_formula": "half_mod_split",
                               "req_item_type": "Focus"},
-            "precise_shot": {"name": "🎯 Precise Shot", "desc": "Ranged attack.", "type": "physical",
+            "precise_shot": {"name": "🎯 Точний Постріл", "desc": "Дистанційна атака.", "type": "physical",
                              "stat_options": ["dex"], "effect_formula": "mod", "req_item_type": "RangedWeapon"},
-            "support": {"name": "❤️ Support", "desc": "Help ally.", "type": "support",
+            "support": {"name": "❤️ Підтримка", "desc": "Допомога союзнику.", "type": "support",
                         "stat_options": ["int", "wis", "cha"], "effect_formula": "mod", "req_item_type": None}
         }
-
         self._local_combat_state = {"active": False, "round": 0, "turn_order": [], "current_turn_index": 0,
                                     "tokens": {}}
 
-        # --- CRITICAL FIX: START SERVER AUTOMATICALLY ---
-        # This ensures that when you run the app locally, the 'server' is active
-        # so that requests to localhost:5000 don't fail.
-        self.start_server()
-
-    # --- DB MANAGEMENT ---
-
-    def _seed_db_combined(self):
+    # --- DB LOGIC (Condensed for brevity, logic same as before) ---
+    def _seed_db_from_github(self):
         if os.path.exists(self.db_path):
             try:
                 os.remove(self.db_path)
             except:
                 pass
-
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-
         for table_name in self.FILES_MAP.keys():
             cursor.execute(
-                f'CREATE TABLE IF NOT EXISTS "{table_name}" (index_name TEXT PRIMARY KEY, name TEXT, data JSON, source TEXT)')
-
-        def process_version(base_url, version_label):
-            print(f"🌐 Processing {version_label} rules from {base_url}...")
-            for table_name, filename in self.FILES_MAP.items():
-                url = f"{base_url}/{filename}"
-                try:
-                    resp = requests.get(url, timeout=10)
-                    if resp.status_code == 200:
-                        data_list = resp.json()
-                        count = 0
-                        for item in data_list:
-                            idx = item.get('index')
-                            name = item.get('name')
-                            if idx and name:
-                                cursor.execute(f'INSERT OR REPLACE INTO "{table_name}" VALUES (?, ?, ?, ?)',
-                                               (idx, name, json.dumps(item), version_label))
-                                count += 1
-                        print(f"      ✅ Inserted {count} records into {table_name}.")
-                except Exception as e:
-                    print(f"      ❌ Error downloading {filename}: {e}")
-
-        process_version(self.GITHUB_RAW_BASE_2014, "2014")
-        process_version(self.GITHUB_RAW_BASE_2024, "2024")
-
-        conn.commit()
+                f'CREATE TABLE IF NOT EXISTS "{table_name}" (index_name TEXT PRIMARY KEY, name TEXT, data JSON)')
+        for table_name, filename in self.FILES_MAP.items():
+            url = f"{self.GITHUB_RAW_BASE}/{filename}"
+            try:
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    for item in resp.json():
+                        if item.get('index') and item.get('name'):
+                            cursor.execute(f'INSERT OR REPLACE INTO "{table_name}" VALUES (?, ?, ?)',
+                                           (item['index'], item['name'], json.dumps(item)))
+            except:
+                pass
+        conn.commit();
         conn.close()
-        print("🎉 Database seeding finished.")
 
     def _load_data_from_sqlite(self):
         if not os.path.exists(self.db_path): return False
-
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            existing_tables = {row[0] for row in cursor.fetchall()}
+            existing = {r[0] for r in cursor.fetchall()}
+            if not {'races', 'classes', 'monsters'}.issubset(existing): conn.close(); return False
 
-            required = {'races', 'classes', 'monsters'}
-            if not required.issubset(existing_tables):
-                conn.close()
-                return False
-
+            # Subraces/Classes
             try:
-                if 'subraces' in existing_tables:
-                    cursor.execute("SELECT data FROM subraces")
-                    for row in cursor.fetchall():
-                        d = json.loads(row[0])
-                        if d.get('race'): self.subrace_map.setdefault(d['race']['index'], []).append(d['name'])
-                if 'subclasses' in existing_tables:
-                    cursor.execute("SELECT data FROM subclasses")
-                    for row in cursor.fetchall():
-                        d = json.loads(row[0])
-                        if d.get('class'): self.subclass_map.setdefault(d['class']['index'], []).append(d['name'])
+                cursor.execute("SELECT data FROM subraces")
+                for r in cursor.fetchall():
+                    d = json.loads(r[0]);
+                    self.subrace_map.setdefault(d.get('race', {}).get('index'), []).append(d['name'])
+                cursor.execute("SELECT data FROM subclasses")
+                for r in cursor.fetchall():
+                    d = json.loads(r[0]);
+                    self.subclass_map.setdefault(d.get('class', {}).get('index'), []).append(d['name'])
             except:
                 pass
 
-            self.races = {}
-            try:
-                cursor.execute("SELECT data, source FROM races")
-                rows = cursor.fetchall()
-            except:
-                cursor.execute("SELECT data FROM races")
-                rows = [(r[0], "unknown") for r in cursor.fetchall()]
+            # Races
+            tbl = 'races' if 'races' in existing else 'species'
+            cursor.execute(f"SELECT data FROM {tbl}")
+            for r in cursor.fetchall():
+                d = json.loads(r[0]);
+                bns = {b['ability_score']['index']: b['bonus'] for b in d.get('ability_bonuses', [])}
+                self.races[d['name']] = {"speed": d.get('speed', 30), "bonuses": bns,
+                                         "subraces": self.subrace_map.get(d['index'], [])}
 
-            for row in rows:
-                d = json.loads(row[0])
-                src = row[1]
-                name = d['name']
-                if src == '2024': name += " (2024)"
-                bonuses = {b['ability_score']['index']: b['bonus'] for b in d.get('ability_bonuses', [])}
-                self.races[name] = {"speed": d.get('speed', 30), "bonuses": bonuses,
-                                    "subraces": self.subrace_map.get(d['index'], [])}
+            # Classes
+            cursor.execute("SELECT data FROM classes")
+            skills_set = set()
+            for r in cursor.fetchall():
+                d = json.loads(r[0]);
+                s_list = []
+                if d.get('proficiency_choices'):
+                    for o in d['proficiency_choices'][0]['from'].get('options', []):
+                        if 'item' in o: nm = o['item']['name'].replace('Skill: ', ''); s_list.append(
+                            nm); skills_set.add(nm)
+                self.classes[d['name']] = {"hit_die": d.get('hit_die', 8), "skills_count": 2,
+                                           "available_skills": s_list, "is_caster": 'spellcasting' in d,
+                                           "specializations": self.subclass_map.get(d['index'], [])}
+            self.skills_list = sorted(list(skills_set)) if skills_set else ["Athletics"]
 
-            self.classes = {}
-            skill_set = set()
-            try:
-                cursor.execute("SELECT data FROM classes")
-                for row in cursor.fetchall():
-                    d = json.loads(row[0])
-                    name = d['name']
-                    skills = []
-                    if 'proficiency_choices' in d:
-                        choices = d['proficiency_choices']
-                        if isinstance(choices, list):
-                            for choice in choices:
-                                if 'from' in choice and 'options' in choice['from']:
-                                    for opt in choice['from']['options']:
-                                        if 'item' in opt:
-                                            s = opt['item']['name'].replace('Skill: ', '')
-                                            skills.append(s);
-                                            skill_set.add(s)
-
-                    self.classes[name] = {
-                        "hit_die": d.get('hit_die', 8),
-                        "skills_count": d.get('proficiency_choices', [{}])[0].get('choose', 2) if d.get(
-                            'proficiency_choices') else 2,
-                        "available_skills": skills,
-                        "is_caster": 'spellcasting' in d,
-                        "specializations": self.subclass_map.get(d['index'], [])
-                    }
-                self.skills_list = sorted(list(skill_set)) if skill_set else ["Athletics", "Perception"]
-            except:
-                pass
-
+            # Monsters
             self.creature_bestiary = {}
             cursor.execute("SELECT data FROM monsters")
-            for row in cursor.fetchall():
-                m = json.loads(row[0])
-                key = m['index']
+            for r in cursor.fetchall():
+                m = json.loads(r[0]);
                 ac = 10
-                if 'armor_class' in m:
-                    raw_ac = m['armor_class']
-                    if isinstance(raw_ac, list) and raw_ac:
-                        ac = raw_ac[0].get('value', 10)
-                    elif isinstance(raw_ac, int):
-                        ac = raw_ac
+                if m.get('armor_class'):
+                    raw = m['armor_class'];
+                    ac = raw[0].get('value', 10) if isinstance(raw, list) else raw
+                acts = [{"name": a['name'], "desc": a['desc'], "type": "physical"} for a in m.get('actions', [])]
+                if not acts: acts = [{"name": "Attack", "desc": "Basic", "type": "physical"}]
+                self.creature_bestiary[m['index']] = {"name": m['name'], "hp": m.get('hit_points', 10), "ac": ac,
+                                                      "initiative_bonus": (m.get('dexterity', 10) - 10) // 2,
+                                                      "symbol": m['name'][0], "actions": acts}
 
-                actions = []
-                for act in m.get('actions', []):
-                    actions.append({"name": act['name'], "desc": act.get('desc', ''), "type": "physical"})
-
-                if not actions: actions.append({"name": "Attack", "desc": "Basic melee", "type": "physical"})
-
-                self.creature_bestiary[key] = {
-                    "name": m['name'], "hp": m.get('hit_points', 10), "ac": ac,
-                    "initiative_bonus": (m.get('dexterity', 10) - 10) // 2,
-                    "symbol": m['name'][0], "actions": actions
-                }
-
+            # Spells
             self.spells_data = {}
-            if 'spells' in existing_tables:
+            if 'spells' in existing:
                 cursor.execute("SELECT data FROM spells")
-                for row in cursor.fetchall():
-                    s = json.loads(row[0])
-                    s_name = s['name']
-                    for c in s.get('classes', []):
-                        if c.get('name'): self.spells_data.setdefault(c['name'], []).append(s_name)
+                for r in cursor.fetchall():
+                    s = json.loads(r[0]);
+                    for c in s.get('classes', []): self.spells_data.setdefault(c['name'], []).append(s['name'])
                 for k in self.spells_data: self.spells_data[k].sort()
-
-            conn.close()
-            if not self.races: return False
+            conn.close();
             return True
-        except Exception as e:
-            print(f"❌ DB Load Error: {e}")
+        except:
             return False
 
     def _load_fallbacks(self):
@@ -366,7 +334,7 @@ class DataManager(QObject):
     # --- GETTERS ---
     def get_inventory(self, uid):
         return {"w1": {"name": "Longsword", "type": "Weapon", "is_equipped": True},
-                "p1": {"name": "Health Potion", "type": "Consumable", "is_equipped": False}}
+                "p1": {"name": "Potion", "type": "Consumable"}}
 
     def get_master_item_dataset(self):
         return self.master_items
@@ -410,29 +378,21 @@ class DataManager(QObject):
     def get_rest_recovery_formula(self, l):
         return "1d8"
 
-    # Server
+    # Server & Session
     def start_server(self):
         self.is_host = True
-        # Run Flask in a thread
         threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False),
                          daemon=True).start()
-
-        local_ip = socket.gethostbyname(socket.gethostname())
-        print(f"🚀 Server started at http://{local_ip}:5000")
-        return local_ip
 
     def set_host_address(self, ip):
         self.server_url = f"http://{ip}:5000"
 
     def start_new_session(self):
-        if not self.is_host:
-            # Auto-start if not started yet (fallback safety)
-            self.start_server()
-
         sid = "SESS_" + str(uuid.uuid4())[:4].upper()
-        db_store["sessions"][sid] = {"status": "ACTIVE", "players": {}, "logs": [], "dm_id": self.user_id}
-        db_store["combat_state"][sid] = {"active": False, "round": 0, "turn_order": [], "current_turn_index": 0,
-                                         "tokens": {}}
+        with db_lock:
+            db_store["sessions"][sid] = {"status": "ACTIVE", "players": {}, "logs": [], "dm_id": self.user_id}
+            db_store["combat_state"][sid] = {"active": False, "round": 0, "turn_order": [], "current_turn_index": 0,
+                                             "tokens": {}}
         self._current_session_id = sid
         return sid
 
@@ -444,21 +404,23 @@ class DataManager(QObject):
             ip, sid = cs.split("/") if "/" in cs else ("127.0.0.1", cs)
             self.set_host_address(ip)
             if requests.get(f"{self.server_url}/session/{sid}", timeout=2).status_code == 200:
-                self._current_session_id = sid
+                self._current_session_id = sid;
                 return True
         except:
             pass
         return False
 
     def get_session_players(self, sid):
-        if self.is_host: return db_store["sessions"].get(sid, {}).get("players", {})
+        if self.is_host:
+            with db_lock: return copy.deepcopy(db_store["sessions"].get(sid, {}).get("players", {}))
         try:
             return requests.get(f"{self.server_url}/session/{sid}", timeout=1).json().get("players", {})
         except:
             return {}
 
     def get_session_updates(self, sid):
-        if self.is_host: return db_store["sessions"].get(sid, {}).get("logs", [])
+        if self.is_host:
+            with db_lock: return copy.deepcopy(db_store["sessions"].get(sid, {}).get("logs", []))
         try:
             return requests.get(f"{self.server_url}/session/{sid}", timeout=1).json().get("logs", [])
         except:
@@ -468,45 +430,31 @@ class DataManager(QObject):
         return "HOST" if self.is_host else None
 
     def save_character(self, data):
-        # Ensure we have a session ID. If not, assume local play/creation.
-        # If just creating a char without a session, we don't push to server.
         if not self._current_session_id: return data
-
-        payload = {"sid": self._current_session_id, "uid": self.user_id, "player_data": data}
         try:
-            requests.post(f"{self.server_url}/join", json=payload)
+            requests.post(f"{self.server_url}/join",
+                          json={"sid": self._current_session_id, "uid": self.user_id, "player_data": data}); return data
+        except:
             return data
-        except Exception as e:
-            print(f"Save char failed: {e}")
-            return data  # Return data anyway to not crash UI
 
     def update_character_data(self, p):
-        if not self._current_session_id: return
         if self.is_host:
-            sess = db_store["sessions"].get(self._current_session_id)
-            if sess and self.user_id in sess["players"]:
-                sess["players"][self.user_id].update(p)
+            with db_lock:
+                db_store["sessions"].get(self._current_session_id, {}).get("players", {}).get(self.user_id, {}).update(
+                    p)
         else:
-            try:
-                requests.post(f"{self.server_url}/player/update",
-                              json={"sid": self._current_session_id, "uid": self.user_id, "data": p})
-            except:
-                pass
+            requests.post(f"{self.server_url}/player/update",
+                          json={"sid": self._current_session_id, "uid": self.user_id, "data": p})
 
     def push_session_update(self, sid, c, t="MESSAGE", is_secret=False):
-        if not sid: return False
+        if not sid: return
         l = {"type": t, "content": c, "timestamp": QDateTime.currentDateTime().toString("hh:mm"),
              "sender_id": self.user_id, "is_secret": is_secret}
-
         if self.is_host:
-            if sid in db_store["sessions"]:
-                db_store["sessions"][sid]["logs"].append(l)
+            with db_lock:
+                db_store["sessions"].get(sid, {}).get("logs", []).append(l)
         else:
-            try:
-                requests.post(f"{self.server_url}/update/logs", json={"sid": sid, "log": l})
-            except Exception as e:
-                print(f"Push update failed: {e}")
-        return True
+            requests.post(f"{self.server_url}/update/logs", json={"sid": sid, "log": l})
 
     def subscribe_to_players(self, s, cb):
         cb(self.get_session_players(s))
@@ -520,77 +468,89 @@ class DataManager(QObject):
     def save_scenario_tree(self, d):
         return True
 
-    # --- COMBAT LOGIC ---
+    # --- COMBAT ---
     def get_bestiary(self):
         return self.creature_bestiary
 
     def get_combat_state(self):
-        if not self._current_session_id: return self._local_combat_state
-
+        if not self._current_session_id: return copy.deepcopy(self._local_combat_state)
         if self.is_host:
-            return db_store["combat_state"].get(self._current_session_id, self._local_combat_state)
-        else:
-            try:
-                r = requests.get(f"{self.server_url}/combat/state/{self._current_session_id}", timeout=0.5)
-                if r.status_code == 200: return r.json()
-            except:
-                pass
-        return self._local_combat_state
+            with db_lock: return copy.deepcopy(
+                db_store["combat_state"].get(self._current_session_id, self._local_combat_state))
+        try:
+            return requests.get(f"{self.server_url}/combat/state/{self._current_session_id}", timeout=0.5).json()
+        except:
+            return copy.deepcopy(self._local_combat_state)
 
     def update_combat_state(self, p):
         if not self._current_session_id: return
-
         if self.is_host:
-            if self._current_session_id in db_store["combat_state"]:
-                db_store["combat_state"][self._current_session_id].update(p)
+            with db_lock:
+                st = db_store["combat_state"].get(self._current_session_id)
+                if st:
+                    if "tokens" in p:
+                        st["tokens"].update(p["tokens"])
+                        p_copy = p.copy();
+                        del p_copy["tokens"];
+                        st.update(p_copy)
+                    else:
+                        st.update(p)
         else:
-            try:
-                requests.post(f"{self.server_url}/combat/update", json={"sid": self._current_session_id, "state": p})
-            except:
-                pass
+            requests.post(f"{self.server_url}/combat/update", json={"sid": self._current_session_id, "state": p})
 
     def start_combat(self):
         self.update_combat_state({"active": True, "round": 1})
 
-    def add_creature_to_combat(self, key, custom_name=None):
-        d = self.creature_bestiary.get(key)
+    def add_creature_to_combat(self, k, n=None):
+        d = self.creature_bestiary.get(k);
         if not d: return
         uid = f"NPC_{str(uuid.uuid4())[:4]}"
-        name = custom_name if custom_name else d['name']
-        st = self.get_combat_state()
-        t = st.get("tokens", {})
-        t[uid] = {"name": name, "x": 0, "y": 0, "color": "#D32F2F", "type": "enemy",
-                  "init_bonus": d['initiative_bonus'], "actions": d.get('actions', [])}
-        self.update_combat_state({"tokens": t})
+        self.update_combat_state({"tokens": {
+            uid: {"name": n or d['name'], "x": 0, "y": 0, "color": "#D32F2F", "type": "enemy",
+                  "init_bonus": d['initiative_bonus'], "actions": d.get('actions', [])}}})
         return uid
 
     def roll_initiative(self):
-        c = []
-        st = self.get_combat_state()
+        c = [];
+        st = self.get_combat_state();
         t = st.get("tokens", {})
-
-        # Add players if they are not on map yet
         for u, p in self.get_session_players(self._current_session_id).items():
             if u not in t: t[u] = {"x": 1, "y": 1, "color": "#388E3C", "name": p.get("name"), "type": "player"}
-
-        # Recalculate initiative for everyone
-        for uid, token in t.items():
-            roll = random.randint(1, 20)
-            if token.get('type') == 'enemy':
-                roll += token.get('init_bonus', 0)
-            # For players, we assume +0 mod if we don't have char sheet accessible here easily (simplified)
-
-            c.append({"uid": uid, "name": token["name"], "total": roll, "type": token.get('type', 'unknown')})
-
-        c.sort(key=lambda x: x["total"], reverse=True)
+        for u, tok in t.items():
+            mod = tok.get('init_bonus', 0)
+            c.append({"uid": u, "name": tok["name"], "total": random.randint(1, 20) + mod,
+                      "type": tok.get('type', 'unknown')})
+        c.sort(key=lambda x: x['total'], reverse=True)
         self.update_combat_state({"turn_order": c, "current_turn_index": 0, "tokens": t})
 
-    def move_token(self, u, x, y):
+    def move_token(self, u, x, y, is_dm=False):
+        """
+        Оновлена логіка переміщення.
+        DM може рухати всіх ДО бою (active=False).
+        Після початку бою (active=True): DM рухає тільки ворогів, Гравець - себе.
+        """
         st = self.get_combat_state()
-        t = st.get("tokens", {})
-        if u in t:
-            t[u]["x"] = x;
-            t[u]["y"] = y
-            self.update_combat_state({"tokens": t})
-            return True
-        return False
+        if u not in st.get("tokens", {}): return False
+
+        is_combat_active = st.get("active", False)
+        token_type = st["tokens"][u].get("type", "unknown")
+
+        # Якщо це ДМ
+        if is_dm:
+            # До бою: можна все
+            if not is_combat_active:
+                pass
+            # У бою: тільки ворогів (або NPC)
+            elif token_type == 'player':
+                # УВАГА: Забороняємо ДМ рухати гравців під час бою за вашим запитом
+                return False
+
+                # Якщо це Гравець (is_dm=False)
+        else:
+            # Гравець може рухати тільки себе (перевірка my_uid робиться на рівні віджета,
+            # тут ми довіряємо, що u == self.user_id, але можна перевірити)
+            if u != self.user_id: return False
+
+        # Виконуємо рух
+        self.update_combat_state({"tokens": {u: {"x": x, "y": y}}})
+        return True

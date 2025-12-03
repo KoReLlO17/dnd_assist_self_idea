@@ -203,13 +203,13 @@ class CharacterCreationCardTab(QWidget):
         lvl = self.level_spin.value()
         info = self.classes_data.get(cls_name, {})
 
-
+        # Підкласи (Subclasses)
         self.subclass_combo.clear()
-
+        # Перевіряємо рівень для підкласу (зазвичай 3-й, але у кліриків 1-й)
         subclass_lvl_req = info.get('subclass_level', 3)
 
         if lvl >= subclass_lvl_req:
-
+            # Список спеціалізацій (вони ж підкласи у нашій структурі)
             specs = info.get('specializations', [])
             if specs:
                 self.subclass_combo.addItems(specs)
@@ -305,6 +305,8 @@ class CharacterCreationCardTab(QWidget):
                     spells.append(item.text())
 
         # --- ФОРМУВАННЯ ОБ'ЄКТА ПЕРСОНАЖА (CHAR DATA) ---
+        # Важливо: додаємо всі поля, які очікує логіка (наприклад, conditions)
+        # Навіть якщо вони порожні або дефолтні.
 
         char_data = {
             "name": name,
