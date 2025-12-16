@@ -173,7 +173,7 @@ class PlayerMenu(QWidget):
 
     def _open_map_window(self):
         # Відкриваємо нове спільне вікно бою
-        # is_dm=False -> гравець може рухати тільки свій токен
+        # is_dm=False -> гравець може рухати тільки свій токен (self.dm.get_user_id())
         self.map_win = CombatWindow(self.dm, char_uid=self.dm.get_user_id(), is_dm=False, parent=self)
         self.map_win.show()
 

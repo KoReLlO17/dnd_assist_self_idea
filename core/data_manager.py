@@ -446,6 +446,48 @@ class DataManager(QObject):
             requests.post(f"{self.server_url}/player/update",
                           json={"sid": self._current_session_id, "uid": self.user_id, "data": p})
 
+    def add_object_to_combat(self, obj_type):
+        """
+        Додає неживий об'єкт на поле бою (стіна, бочка).
+        """
+        if not self._current_session_id: return
+
+        obj_definitions = {
+            "wall": {"name": "Стіна", "color": "#607D8B", "symbol": "█", "hp": 100},
+            "barrel": {"name": "Вибухова Бочка", "color": "#FF5722", "symbol": "🛢️", "hp": 10},
+            "trap": {"name": "Пастка", "color": "#9E9E9E", "symbol": "⚠", "hp": 5},
+            "chest": {"name": "Скриня", "color": "#FFC107", "symbol": "📦", "hp": 20}
+        }
+
+        definition = obj_definitions.get(obj_type)
+        if not definition: return
+
+        uid = f"OBJ_{str(uuid.uuid4())[:4]}"
+
+        # Додаємо як токен, але з типом 'object'
+        new_token = {
+            uid: {
+                "name": definition['name'],
+                "x": 0, "y": 0,
+                "color": definition['color'],
+                "type": "object",  # Важливо для логіки переміщення
+                "symbol": definition['symbol'],  # Для відображення на мапі
+                "hp": definition['hp'],
+                "max_hp": definition['hp'],
+                "visible": True  # За замовчуванням видно всім
+            }
+        }
+        # Використовуємо update, щоб додати до існуючих, а не перезаписати все
+        # Але тут треба бути обережним з реалізацією update_combat_state
+        # Найбезпечніше: отримати поточні, додати, зберегти.
+
+        current_state = self.get_combat_state()
+        tokens = current_state.get("tokens", {})
+        tokens.update(new_token)
+
+        self.update_combat_state({"tokens": tokens})
+        return uid
+
     def push_session_update(self, sid, c, t="MESSAGE", is_secret=False):
         if not sid: return
         l = {"type": t, "content": c, "timestamp": QDateTime.currentDateTime().toString("hh:mm"),

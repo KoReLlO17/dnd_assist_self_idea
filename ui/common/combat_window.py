@@ -34,7 +34,7 @@ class CombatWindow(QDialog):
 
         # 1. Turn Tracker
         self.tracker = TurnTrackerWidget()
-        # Підключення кліку по трекеру (можна додати діалог деталей)
+        self.tracker.show_details_requested.connect(self._show_details)
         left_layout.addWidget(self.tracker)
 
         # 2. Панель Дій (Змінюється динамічно)
@@ -63,8 +63,6 @@ class CombatWindow(QDialog):
         self.map_widget = BattleMapWidget(is_dm=self.is_dm, my_uid=self.char_uid)
 
         # Підключаємо рух
-        # Якщо ДМ: is_dm=True дозволяє рухати монстрів
-        # Якщо Гравець: рухає тільки себе (перевірка всередині move_token в DataManager)
         self.map_widget.token_moved.connect(self._handle_move)
         self.map_widget.token_clicked.connect(self._on_token_click)
 
@@ -88,7 +86,6 @@ class CombatWindow(QDialog):
         tokens = state.get("tokens", {})
         if self.char_uid not in tokens:
             # Якщо гравця немає на мапі, додаємо його
-            # (У реальній грі це може робити ДМ, але для зручності авто-спавн)
             new_token = {self.char_uid: {"name": "Me", "x": 1, "y": 1, "color": "#4CAF50", "type": "player"}}
             self.dm.update_combat_state({"tokens": new_token})
 
@@ -105,6 +102,10 @@ class CombatWindow(QDialog):
     def _handle_move(self, uid, x, y):
         # Передаємо is_dm в DataManager, щоб він знав чи дозволяти рух монстрів
         self.dm.move_token(uid, x, y, is_dm=self.is_dm)
+
+    def _show_details(self, uid, name, data):
+        dlg = CombatantDetailsDialog(name, data, self)
+        dlg.exec()
 
     def _on_token_click(self, uid):
         # Оновлення панелі дій (залежить від ролі)

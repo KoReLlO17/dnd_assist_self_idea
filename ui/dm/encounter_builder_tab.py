@@ -226,7 +226,6 @@ class EncounterBuilderTab(QWidget):
         self.mode_group = QButtonGroup(self)
         self.mode_group.addButton(self.btn_select)
         self.mode_group.addButton(self.btn_move)
-        # Підключення методу _update_btn_style
         self.mode_group.buttonToggled.connect(self._update_btn_style)
 
         mode_l.addWidget(self.btn_select)

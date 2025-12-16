@@ -27,7 +27,9 @@ class CombatantDetailsDialog(QDialog):
         info_frame.setStyleSheet("background-color: #ECEFF1; border-radius: 5px; padding: 5px;")
         i_lay = QVBoxLayout(info_frame)
         i_lay.addWidget(QLabel(f"Тип: {token_data.get('type', 'Unknown').upper()}"))
-        i_lay.addWidget(QLabel("Стан: Невідомий (Туман Війни)"))
+        # Тут можна додати реальні HP, якщо вони є в token_data
+        hp = token_data.get('hp', '???')
+        i_lay.addWidget(QLabel(f"HP: {hp}"))
         layout.addWidget(info_frame)
 
         # Full Sheet Button

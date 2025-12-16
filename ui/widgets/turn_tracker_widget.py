@@ -24,6 +24,9 @@ class TurnTrackerWidget(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
         self.table.setColumnWidth(4, 60)
 
+        # Робимо таблицю Read-Only, крім кнопки
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+
         layout.addWidget(self.table)
 
     def update_state(self, combat_state):
@@ -60,6 +63,7 @@ class TurnTrackerWidget(QWidget):
 
             # Передаємо дані токена у діалог
             token_data = tokens.get(uid, {})
+            # Важливо: використовуємо lambda з фіксацією змінних
             btn.clicked.connect(lambda ch=False, u=uid, n=name, d=token_data: self.show_details_requested.emit(u, n, d))
 
             btn_layout.addWidget(btn)
